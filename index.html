@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School Day Sprint - French Time Game</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- React & ReactDOM (Production versions for better performance) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel standalone to compile JSX in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-blue-50">
+    <!-- This is where the React app will inject itself -->
+    <div id="root"></div>
+
+    <!-- The game logic written in React/JSX -->
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        // --- GAME DATA & LOGIC ---
+
+        const SUBJECTS = ['français', 'anglais', 'géographie', 'histoire', 'théâtre', 'maths', 'E.P.S.', 'dessin', 'musique', 'danse', 'religion', 'informatique'];
+        const SUBJECTS_EN = {
+          'français': 'French', 'anglais': 'English', 'géographie': 'Geography', 'histoire': 'History', 
+          'théâtre': 'Drama', 'maths': 'Maths', 'E.P.S.': 'P.E.', 'dessin': 'Art', 
+          'musique': 'Music', 'danse': 'Dance', 'religion': 'R.E.', 'informatique': 'I.T.'
+        };
+
+        const DAYS = ['Le lundi', 'Le mardi', 'Le mercredi', 'Le jeudi', 'Le vendredi'];
+        const DAYS_EN = {
+          'Le lundi': 'Monday', 'Le mardi': 'Tuesday', 'Le mercredi': 'Wednesday', 
+          'Le jeudi': 'Thursday', 'Le vendredi': 'Friday', 'Ensuite': 'Then'
+        };
+
+        // Complete set of timetable times precisely as listed in the worksheet
+        const WORKSHEET_TIMES = [
+          { h: 8, m: 50, fr: "à neuf heures moins dix", display: "08:50" },
+          { h: 9, m: 0,  fr: "à neuf heures", display: "09:00" },
+          { h: 9, m: 15, fr: "à neuf heures et quart", display: "09:15" },
+          { h: 9, m: 55, fr: "à dix heures moins cinq", display: "09:55" },
+          { h: 10, m: 10, fr: "à dix heures dix", display: "10:10" },
+          { h: 10, m: 55, fr: "à onze heures moins cinq", display: "10:55" },
+          { h: 11, m: 5,  fr: "à onze heures cinq", display: "11:05" },
+          { h: 12, m: 0,  fr: "à midi", display: "12:00" },
+          { h: 12, m: 20, fr: "à douze heures vingt", display: "12:20" },
+          { h: 12, m: 55, fr: "à une heure moins cinq", display: "12:55" },
+          { h: 1,  m: 15, fr: "à une heure et quart", display: "01:15" },
+          { h: 1,  m: 25, fr: "à une heure vingt-cinq", display: "01:25" },
+          { h: 1,  m: 45, fr: "à deux heures moins le quart", display: "01:45" },
+          { h: 2,  m: 20, fr: "à deux heures vingt", display: "02:20" },
+          { h: 2,  m: 40, fr: "à trois heures moins vingt", display: "02:40" },
+          { h: 3,  m: 35, fr: "à quatre heures moins vingt-cinq", display: "03:35" }
+        ];
+
+        // --- AUDIO SYSTEM ---
+        let audioCtx = null;
+
+        function initAudio() {
+          if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+        }
+
+        function playTone(freq, type, duration, vol = 0.1) {
+          if (!audioCtx) return;
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = type;
+          osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+          gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + duration);
+        }
+
+        const sfx = {
+          correct: () => {
+            playTone(523.25, 'sine', 0.1); 
+            setTimeout(() => playTone(659.25, 'sine', 0.1), 100); 
+            setTimeout(() => playTone(783.99, 'sine', 0.2), 200); 
+          },
+          wrong: () => {
+            playTone(150, 'sawtooth', 0.3, 0.2);
+            setTimeout(() => playTone(120, 'sawtooth', 0.3, 0.2), 150);
+          },
+          click: () => playTone(800, 'sine', 0.05, 0.05),
+          levelUp: () => {
+            [0, 100, 200, 300, 400].forEach((delay, i) => {
+              setTimeout(() => playTone(440 + (i * 110), 'square', 0.15, 0.05), delay);
+            });
+          },
+          victory: () => {
+            [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
+              setTimeout(() => playTone(freq, 'sine', 0.3, 0.1), i * 200);
+            });
+            setTimeout(() => playTone(1046.50, 'square', 0.6, 0.1), 800);
+          }
+        };
+
+        // --- COMPONENTS ---
+
+        const AnalogueClock = ({ h, m }) => {
+          const hourDeg = (h % 12 + m / 60) * 30;
+          const minDeg = m * 6;
+
+          return (
+            <svg viewBox="0 0 100 100" className="w-48 h-48 drop-shadow-xl">
+              <circle cx="50" cy="50" r="48" fill="white" stroke="#3b82f6" strokeWidth="4" />
+              <circle cx="50" cy="50" r="3" fill="#1e3a8a" />
+              {[...Array(12)].map((_, i) => (
+                <line key={i} x1="50" y1="8" x2="50" y2="12" stroke="#9ca3af" strokeWidth="2" transform={`rotate(${i * 30} 50 50)`} />
+              ))}
+              <text x="50" y="22" textAnchor="middle" fontSize="12" fill="#4b5563" fontWeight="bold">12</text>
+              <text x="78" y="54" textAnchor="middle" fontSize="12" fill="#4b5563" fontWeight="bold">3</text>
+              <text x="50" y="86" textAnchor="middle" fontSize="12" fill="#4b5563" fontWeight="bold">6</text>
+              <text x="22" y="54" textAnchor="middle" fontSize="12" fill="#4b5563" fontWeight="bold">9</text>
+              
+              <line x1="50" y1="50" x2="50" y2="25" stroke="#1e3a8a" strokeWidth="4" strokeLinecap="round" transform={`rotate(${hourDeg} 50 50)`} />
+              <line x1="50" y1="50" x2="50" y2="15" stroke="#ef4444" strokeWidth="3" strokeLinecap="round" transform={`rotate(${minDeg} 50 50)`} />
+            </svg>
+          );
+        };
+
+        // --- MAIN APP ---
+
+        function App() {
+          const [gameState, setGameState] = useState('MENU'); // MENU, PLAY, GAMEOVER, VICTORY
+          const [level, setLevel] = useState(1);
+          const [xp, setXp] = useState(0);
+          const [score, setScore] = useState(0);
+          const [streak, setStreak] = useState(0);
+          const [timeLeft, setTimeLeft] = useState(60);
+          
+          const [question, setQuestion] = useState(null);
+          
+          const [selectedWordIds, setSelectedWordIds] = useState([]);
+          const [receptiveSelection, setReceptiveSelection] = useState({ day: null, time: null, subject: null });
+          const [feedbackState, setFeedbackState] = useState(''); 
+
+          const timerRef = useRef(null);
+
+          const shuffleArray = (arr) => [...arr].sort(() => Math.random() - 0.5);
+
+          const generateQuestion = useCallback((currentLevel) => {
+            // Select one of the fixed timetable times from your sheet
+            const targetTimeObj = WORKSHEET_TIMES[Math.floor(Math.random() * WORKSHEET_TIMES.length)];
+            const h = targetTimeObj.h;
+            const m = targetTimeObj.m;
+            const timePhrase = targetTimeObj.fr;
+            const timeDisplay = targetTimeObj.display;
+            
+            // Pick a random day/transition phrase
+            const useTransition = Math.random() > 0.6;
+            const day = useTransition ? 'Ensuite' : DAYS[Math.floor(Math.random() * DAYS.length)];
+            
+            // Pick a random school subject
+            const subject = SUBJECTS[Math.floor(Math.random() * SUBJECTS.length)];
+            
+            // Verb options: j'ai (I have) or je n'ai pas (I don't have)
+            const isNegative = Math.random() > 0.5;
+            const verbPhrase = isNegative ? "je n'ai pas" : "j'ai";
+            
+            let mode = '';
+            let validPhrases = [];
+            let context = '';
+            let targetPhraseForDisplay = '';
+            let receptiveOptions = null;
+            let isAnalogue = false;
+            let isDigital = false;
+
+            if (currentLevel === 1) {
+              isAnalogue = Math.random() > 0.5;
+              isDigital = !isAnalogue;
+              mode = isAnalogue ? 'ANALOGUE_MIX' : 'DIGITAL_MIX';
+              // Simple clock to time phrase matching (include the French preposition "à")
+              validPhrases = [timePhrase];
+              targetPhraseForDisplay = timePhrase;
+              context = `Build the French time phrase (include "à")`;
+            } 
+            else if (currentLevel === 2) {
+              isAnalogue = Math.random() > 0.5;
+              isDigital = !isAnalogue;
+              mode = isAnalogue ? 'ANALOGUE_MIX' : 'DIGITAL_MIX';
+              validPhrases = [timePhrase];
+              targetPhraseForDisplay = timePhrase;
+              context = `Build the French time phrase (include "à")`;
+            } 
+            else if (currentLevel === 3) {
+              // Level 3: Receptive Matching Level
+              mode = 'RECEPTIVE_SENTENCE';
+              
+              // Form a complete French timetable sentence
+              targetPhraseForDisplay = `${day} ${verbPhrase} ${subject} ${timePhrase}`;
+              
+              let falseDays = shuffleArray(Object.keys(DAYS_EN)).filter(d => d !== day).slice(0, 2);
+              let falseSubjects = shuffleArray(SUBJECTS).filter(s => s !== subject).slice(0, 2);
+              
+              let falseTimes = [];
+              while(falseTimes.length < 2) {
+                let fTimeObj = WORKSHEET_TIMES[Math.floor(Math.random() * WORKSHEET_TIMES.length)];
+                if (fTimeObj.display !== timeDisplay && !falseTimes.includes(fTimeObj.display)) {
+                  falseTimes.push(fTimeObj.display);
+                }
+              }
+
+              receptiveOptions = {
+                days: shuffleArray([{text: DAYS_EN[day], val: day}, ...falseDays.map(d => ({text: DAYS_EN[d], val: d}))]),
+                times: shuffleArray([{text: timeDisplay, val: timeDisplay}, ...falseTimes.map(t => ({text: t, val: t}))]),
+                // Show school subjects in English
+                subjects: shuffleArray([{text: SUBJECTS_EN[subject], val: subject}, ...falseSubjects.map(s => ({text: SUBJECTS_EN[s], val: s}))]),
+                correctAnswers: { day, time: timeDisplay, subject }
+              };
+              setReceptiveSelection({ day: null, time: null, subject: null });
+            }
+            else if (currentLevel === 4) {
+              // Level 4: Productive Affirmative Sentences ("j'ai")
+              isAnalogue = Math.random() > 0.5;
+              isDigital = !isAnalogue;
+              mode = 'SENTENCE_MIXED';
+              
+              validPhrases = [`${day} j'ai ${subject} ${timePhrase}`];
+              
+              context = `Build: "${DAYS_EN[day]} I have ${SUBJECTS_EN[subject]} at ${timeDisplay}"`;
+              if (h === 12 && m === 0) {
+                context = `Build: "${DAYS_EN[day]} I have ${SUBJECTS_EN[subject]} at noon"`;
+              }
+            }
+            else {
+              // Level 5: Productive Sentence Mixture with Negatives ("je n'ai pas")
+              isAnalogue = Math.random() > 0.5;
+              isDigital = !isAnalogue;
+              mode = 'SENTENCE_MIXED';
+              
+              validPhrases = [`${day} ${verbPhrase} ${subject} ${timePhrase}`];
+              
+              const englishVerb = isNegative ? "I don't have" : "I have";
+              context = `Build: "${DAYS_EN[day]} ${englishVerb} ${SUBJECTS_EN[subject]} at ${timeDisplay}"`;
+              if (h === 12 && m === 0) {
+                context = `Build: "${DAYS_EN[day]} ${englishVerb} ${SUBJECTS_EN[subject]} at noon"`;
+              }
+            }
+
+            let finalWordBank = [];
+            if (mode !== 'RECEPTIVE_SENTENCE') {
+              let maxWordCounts = {};
+              
+              validPhrases.forEach(phrase => {
+                  let counts = {};
+                  phrase.split(' ').forEach(w => { counts[w] = (counts[w] || 0) + 1; });
+                  for (let w in counts) {
+                      if (!maxWordCounts[w] || counts[w] > maxWordCounts[w]) {
+                          maxWordCounts[w] = counts[w];
+                      }
+                  }
+              });
+              
+              let baseWords = [];
+              for (let w in maxWordCounts) {
+                  for (let i = 0; i < maxWordCounts[w]; i++) { baseWords.push(w); }
+              }
+
+              // Visual Distractors aligned with French sheet vocab
+              const distractors = ['et', 'moins', 'le', 'quart', 'heures', 'midi', 'j\'ai', 'pas', 'ne', 'je', 'n\'ai', 'de', 'ensuite', 'à', 'une', 'deux'];
+              distractors.push(SUBJECTS.find(s => s !== subject));
+              distractors.push(DAYS.find(d => d !== day));
+
+              const targetLength = Math.max(8, baseWords.length + 3);
+              let loopProtection = 0; 
+
+              while(baseWords.length < targetLength && loopProtection < 100) {
+                  const d = distractors[Math.floor(Math.random() * distractors.length)];
+                  if (!baseWords.includes(d) || d === 'heures') {
+                    baseWords.push(d); 
+                  }
+                  loopProtection++;
+              }
+              
+              finalWordBank = shuffleArray(baseWords).map((word, id) => ({ id: `w_${id}`, word }));
+            }
+
+            setQuestion({
+              h, m, mode, validPhrases, wordBank: finalWordBank, context, targetPhraseForDisplay, receptiveOptions,
+              isAnalogue, isDigital
+            });
+            setSelectedWordIds([]);
+          }, []);
+
+          const startGame = () => {
+            initAudio(); 
+            setGameState('PLAY');
+            setLevel(1);
+            setXp(0);
+            setScore(0);
+            setStreak(0);
+            setTimeLeft(60);
+            generateQuestion(1);
+          };
+
+          const endGame = useCallback(() => {
+            setGameState('GAMEOVER');
+            clearInterval(timerRef.current);
+          }, []);
+
+          const triggerVictory = useCallback(() => {
+            sfx.victory();
+            setGameState('VICTORY');
+            clearInterval(timerRef.current);
+          }, []);
+
+          useEffect(() => {
+            if (gameState === 'PLAY') {
+              timerRef.current = setInterval(() => {
+                setTimeLeft((prev) => {
+                  if (prev <= 1) {
+                    endGame();
+                    return 0;
+                  }
+                  return prev - 1;
+                });
+              }, 1000);
+            }
+            return () => clearInterval(timerRef.current);
+          }, [gameState, endGame]);
+
+          const handleBankClick = (id) => {
+            if (feedbackState || selectedWordIds.includes(id)) return;
+            sfx.click();
+            
+            const newSelected = [...selectedWordIds, id];
+            setSelectedWordIds(newSelected);
+
+            const attemptStr = newSelected.map(selId => question.wordBank.find(w => w.id === selId).word).join(' ');
+            
+            if (question.validPhrases.includes(attemptStr)) {
+              checkProductiveAnswer(newSelected);
+            } else {
+              const maxWords = Math.max(...question.validPhrases.map(p => p.split(' ').length));
+              if (newSelected.length >= maxWords) {
+                checkProductiveAnswer(newSelected);
+              }
+            }
+          };
+
+          const handleAnswerClick = (id) => {
+            if (feedbackState) return;
+            sfx.click();
+            setSelectedWordIds(prev => prev.filter(selectedId => selectedId !== id));
+          };
+
+          const checkProductiveAnswer = (currentSelectionIds) => {
+            const attemptStr = currentSelectionIds.map(id => question.wordBank.find(w => w.id === id).word).join(' ');
+            const isCorrect = question.validPhrases.includes(attemptStr);
+            processAnswerResult(isCorrect);
+          };
+
+          const handleReceptiveClick = (category, value) => {
+            if (feedbackState) return;
+            sfx.click();
+            
+            const newSelection = { ...receptiveSelection, [category]: value };
+            setReceptiveSelection(newSelection);
+
+            if (newSelection.day && newSelection.time && newSelection.subject) {
+              const isCorrect = 
+                newSelection.day === question.receptiveOptions.correctAnswers.day &&
+                newSelection.time === question.receptiveOptions.correctAnswers.time &&
+                newSelection.subject === question.receptiveOptions.correctAnswers.subject;
+              
+              processAnswerResult(isCorrect);
+            }
+          };
+
+          const processAnswerResult = (isCorrect) => {
+            if (isCorrect) {
+              sfx.correct();
+              setFeedbackState('correct');
+              
+              // Scale generous time bonuses for higher levels
+              let timeBonus = 3;
+              if (level === 2) timeBonus = 5;
+              if (level === 3) timeBonus = 8;
+              if (level === 4) timeBonus = 15;
+              if (level === 5) timeBonus = 18;
+              
+              timeBonus += Math.floor(streak / 2); 
+              
+              // Max time cap is set to 120s so they can bank bonus time
+              setTimeLeft(prev => Math.min(120, prev + timeBonus));
+              setStreak(prev => prev + 1);
+              
+              const points = 10 * (level) + (streak * 5);
+              setScore(prev => prev + points);
+              
+              const newXp = xp + 20;
+              setXp(newXp);
+              
+              let nextLevel = level;
+              if (newXp >= 60 && level === 1) nextLevel = 2;   // 3 correct
+              if (newXp >= 120 && level === 2) nextLevel = 3;  // 6 correct
+              if (newXp >= 180 && level === 3) nextLevel = 4;  // 9 correct
+              if (newXp >= 240 && level === 4) nextLevel = 5;  // 12 correct
+              if (newXp >= 300 && level === 5) {               // 15 correct -> WIN!
+                setTimeout(() => triggerVictory(), 800);
+                return;
+              }
+
+              if (nextLevel > level) {
+                sfx.levelUp();
+                setLevel(nextLevel);
+              }
+
+              setTimeout(() => {
+                setFeedbackState('');
+                generateQuestion(nextLevel);
+              }, 1000);
+
+            } else {
+              sfx.wrong();
+              setFeedbackState('wrong');
+              setStreak(0);
+              setTimeLeft(prev => Math.max(0, prev - 5));
+
+              setTimeout(() => {
+                setFeedbackState('');
+                if (question.mode === 'RECEPTIVE_SENTENCE') {
+                   setReceptiveSelection({ day: null, time: null, subject: null });
+                } else {
+                   setSelectedWordIds([]);
+                }
+              }, 1000);
+            }
+          };
+
+          // --- RENDERERS ---
+
+          if (gameState === 'MENU') {
+            return (
+              <div className="min-h-screen flex flex-col items-center justify-center p-4 font-sans text-gray-800">
+                <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-md w-full text-center border-4 border-indigo-400">
+                  <h1 className="text-4xl font-extrabold text-indigo-600 mb-2 tracking-tight">School Day Sprint ⏰</h1>
+                  <p className="text-gray-600 mb-8 font-medium">Master telling the time in French!</p>
+                  
+                  <div className="space-y-4 text-left bg-indigo-50 p-4 rounded-xl mb-8">
+                    <h3 className="font-bold text-indigo-800">How to play:</h3>
+                    <ul className="text-sm text-indigo-900 space-y-2 list-disc pl-4">
+                      <li>Telling times always includes the prefix <b>"à"</b> (at)!</li>
+                      <li>Words stay in place so you won't misclick!</li>
+                      <li>Beat the clock! Build streaks for big time bonuses.</li>
+                      <li>Complete all 5 levels to win reward points!</li>
+                    </ul>
+                  </div>
+
+                  <button 
+                    onClick={startGame}
+                    className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-bold py-4 px-8 rounded-2xl shadow-[0_6px_0_#4338ca] active:shadow-[0_0px_0_#4338ca] active:translate-y-[6px] transition-all text-xl animate-pulse animate-duration-1000"
+                  >
+                    Start Playing! ▶️
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === 'GAMEOVER') {
+            return (
+              <div className="min-h-screen bg-red-50 flex flex-col items-center justify-center p-4 font-sans absolute inset-0 z-50">
+                <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-md w-full text-center border-4 border-red-400 animate-bounce-short">
+                  <h1 className="text-4xl font-extrabold text-red-500 mb-4">Time's Up!</h1>
+                  <div className="text-6xl mb-6">🔔</div>
+                  <div className="bg-gray-100 rounded-xl p-4 mb-8">
+                    <p className="text-gray-500 font-bold uppercase tracking-wider text-sm">Final Score</p>
+                    <p className="text-5xl font-black text-gray-800 my-2">{score}</p>
+                    <p className="text-indigo-500 font-bold">Level Reached: {level}</p>
+                  </div>
+                  <button 
+                    onClick={startGame}
+                    className="w-full bg-green-500 hover:bg-green-600 active:bg-green-700 text-white font-bold py-4 px-8 rounded-2xl shadow-[0_6px_0_#15803d] active:shadow-[0_0px_0_#15803d] active:translate-y-[6px] transition-all text-xl"
+                  >
+                    Play Again 🔄
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          if (gameState === 'VICTORY') {
+            return (
+              <div className="min-h-screen bg-yellow-300 flex flex-col items-center justify-center p-4 font-sans overflow-hidden absolute inset-0 z-50">
+                {/* Animated Background Confetti Elements */}
+                <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                  {[...Array(20)].map((_, i) => (
+                     <div key={i} className={`absolute animate-fall-confetti`} 
+                          style={{ 
+                            left: `${Math.random() * 100}%`, 
+                            top: `-10%`,
+                            backgroundColor: ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6'][Math.floor(Math.random()*5)],
+                            width: `${Math.random() * 10 + 5}px`,
+                            height: `${Math.random() * 20 + 10}px`,
+                            animationDelay: `${Math.random() * 3}s`,
+                            animationDuration: `${Math.random() * 2 + 3}s`,
+                            transform: `rotate(${Math.random() * 360}deg)`
+                          }} 
+                      />
+                  ))}
+                </div>
+
+                <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-md w-full text-center border-8 border-yellow-500 animate-pop-in z-10 relative">
+                  <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-500 to-orange-500 mb-6 drop-shadow-sm">
+                    Excellent travail !
+                  </h1>
+                  
+                  <div className="text-8xl mb-6 animate-bounce">🏆</div>
+                  
+                  <div className="bg-yellow-50 rounded-2xl p-6 mb-8 border-2 border-yellow-200 shadow-inner">
+                    <p className="text-lg text-gray-800 font-bold mb-2">You completed all levels!</p>
+                    <p className="text-3xl font-black text-yellow-600 my-4">{score} pts</p>
+                    <p className="text-md text-red-600 font-extrabold uppercase tracking-wide bg-yellow-100 p-3 rounded-lg border border-yellow-300">
+                      Show this screen to your teacher for reward points!
+                    </p>
+                  </div>
+
+                  <button 
+                    onClick={startGame}
+                    className="w-full bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white font-bold py-4 px-8 rounded-2xl shadow-[0_6px_0_#4338ca] active:shadow-[0_0px_0_#4338ca] active:translate-y-[6px] transition-all text-xl"
+                  >
+                    Play Again 🔄
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          // PLAY STATE
+          return (
+            <div className={`min-h-screen flex flex-col p-4 font-sans transition-colors duration-300 ${
+              feedbackState === 'wrong' ? 'bg-red-100' : feedbackState === 'correct' ? 'bg-green-100' : 'bg-indigo-50'
+            }`}>
+              
+              {/* Top HUD */}
+              <div className="max-w-2xl w-full mx-auto bg-white rounded-2xl shadow-md p-4 mb-4 flex justify-between items-center border-b-4 border-indigo-200">
+                <div className="flex flex-col">
+                  <span className="text-xs text-gray-500 font-bold uppercase">Level {level}/5</span>
+                  <span className="text-2xl font-black text-indigo-600">{score} pt</span>
+                </div>
+                
+                {streak > 1 && (
+                  <div className="flex items-center space-x-1 animate-pulse">
+                    <span className="text-orange-500 text-xl font-black">{streak}x</span>
+                    <span className="text-orange-500 text-sm font-bold">Combo! 🔥</span>
+                  </div>
+                )}
+
+                <div className="flex flex-col items-end">
+                  <span className="text-xs text-gray-500 font-bold uppercase">Time</span>
+                  <span className={`text-2xl font-black ${timeLeft <= 10 ? 'text-red-500 animate-pulse' : 'text-gray-800'}`}>
+                    {timeLeft}s
+                  </span>
+                </div>
+              </div>
+
+              {/* Timer Bar */}
+              <div className="max-w-2xl w-full mx-auto h-3 bg-gray-200 rounded-full mb-6 overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-1000 linear ${timeLeft > 20 ? 'bg-green-400' : timeLeft > 10 ? 'bg-yellow-400' : 'bg-red-500'}`}
+                  style={{ width: `${Math.min(100, (timeLeft / 60) * 100)}%` }}
+                />
+              </div>
+
+              {/* Main Game Area */}
+              <div className={`flex-grow max-w-2xl w-full mx-auto flex flex-col transition-transform ${feedbackState === 'wrong' ? 'animate-shake' : ''}`}>
+                
+                {/* RECEPTIVE LEVEL (Level 3) */}
+                {question?.mode === 'RECEPTIVE_SENTENCE' ? (
+                  <div className="flex-grow flex flex-col gap-4">
+                    <div className="bg-white rounded-3xl shadow-lg p-6 flex flex-col items-center justify-center border-4 border-indigo-100">
+                       <h2 className="text-indigo-400 font-bold text-sm uppercase tracking-wider mb-2">Read and Match</h2>
+                       <p className="text-2xl md:text-3xl font-bold text-gray-800 text-center italic">
+                         "{question.targetPhraseForDisplay}"
+                       </p>
+                    </div>
+                    
+                    <div className="bg-white rounded-3xl shadow-lg p-4 border-4 border-indigo-100 flex-grow flex flex-col justify-around gap-4">
+                       {/* Days Row */}
+                       <div className="flex flex-col">
+                         <span className="text-xs text-gray-400 font-bold uppercase mb-2">1. Select Day</span>
+                         <div className="flex gap-2">
+                           {question.receptiveOptions.days.map(opt => (
+                             <button key={opt.val} onClick={() => handleReceptiveClick('day', opt.val)}
+                               className={`flex-1 py-3 px-2 rounded-xl font-bold transition-all shadow-[0_4px_0_rgba(0,0,0,0.2)] active:shadow-none active:translate-y-[4px]
+                                 ${receptiveSelection.day === opt.val ? 'bg-indigo-500 text-white shadow-none translate-y-[4px]' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+                               {opt.text}
+                             </button>
+                           ))}
+                         </div>
+                       </div>
+                       
+                       {/* Times Row */}
+                       <div className="flex flex-col">
+                         <span className="text-xs text-gray-400 font-bold uppercase mb-2">2. Select Time</span>
+                         <div className="flex gap-2">
+                           {question.receptiveOptions.times.map(opt => (
+                             <button key={opt.val} onClick={() => handleReceptiveClick('time', opt.val)}
+                               className={`flex-1 py-3 px-2 rounded-xl font-bold font-mono text-lg transition-all shadow-[0_4px_0_rgba(0,0,0,0.2)] active:shadow-none active:translate-y-[4px]
+                                 ${receptiveSelection.time === opt.val ? 'bg-indigo-500 text-white shadow-none translate-y-[4px]' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+                               {opt.text}
+                             </button>
+                           ))}
+                         </div>
+                       </div>
+
+                       {/* Subjects Row */}
+                       <div className="flex flex-col">
+                         <span className="text-xs text-gray-400 font-bold uppercase mb-2">3. Select Subject</span>
+                         <div className="flex gap-2">
+                           {question.receptiveOptions.subjects.map(opt => (
+                             <button key={opt.val} onClick={() => handleReceptiveClick('subject', opt.val)}
+                               className={`flex-1 py-3 px-2 rounded-xl font-bold transition-all shadow-[0_4px_0_rgba(0,0,0,0.2)] active:shadow-none active:translate-y-[4px]
+                                 ${receptiveSelection.subject === opt.val ? 'bg-indigo-500 text-white shadow-none translate-y-[4px]' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
+                               {opt.text}
+                             </button>
+                           ))}
+                         </div>
+                       </div>
+                    </div>
+                  </div>
+                ) : 
+                
+                /* PRODUCTIVE LEVELS (L1, L2, L4, L5) */
+                (
+                  <>
+                    {/* Question Display */}
+                    <div className="bg-white rounded-3xl shadow-lg p-6 mb-4 flex-grow flex flex-col items-center justify-center border-4 border-indigo-100 min-h-[300px]">
+                      
+                      <h2 className="text-gray-400 font-bold text-sm uppercase tracking-wider mb-4 text-center">
+                        {level < 3 ? 'Build the time in French' : 'Build the German sentence' ? 'Build the French sentence' : ''}
+                      </h2>
+
+                      <div className="mb-6 flex flex-col items-center justify-center">
+                        {question?.isAnalogue ? (
+                          <AnalogueClock h={question.h} m={question.m} />
+                        ) : question?.isDigital ? (
+                          <div className="bg-gray-800 text-green-400 font-mono text-7xl py-4 px-8 rounded-xl shadow-inner border-4 border-gray-900 tracking-widest">
+                            {question.h.toString().padStart(2, '0')}:{question.m.toString().padStart(2, '0')}
+                          </div>
+                        ) : null}
+                        
+                        {question?.context && (
+                          <div className="text-center mt-4">
+                            <p className="text-indigo-600 font-bold text-lg bg-indigo-50 px-4 py-2 rounded-lg border border-indigo-200">
+                              {question.context}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Answer Box */}
+                      <div className="min-h-[70px] w-full bg-gray-50 rounded-2xl border-2 border-dashed border-gray-300 p-3 flex flex-wrap gap-2 items-center justify-center">
+                        {selectedWordIds.length === 0 && (
+                          <span className="text-gray-400 font-medium">Tap words below...</span>
+                        )}
+                        {selectedWordIds.map((id) => {
+                          const w = question.wordBank.find(b => b.id === id);
+                          return (
+                            <button
+                              key={`ans_${id}`}
+                              onClick={() => handleAnswerClick(id)}
+                              className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-4 rounded-xl shadow-[0_4px_0_#312e81] active:shadow-none active:translate-y-[4px] transition-all animate-pop-in"
+                            >
+                              {w.word}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Stable Word Bank */}
+                    <div className="bg-white rounded-3xl shadow-lg p-6 border-4 border-indigo-100">
+                      <div className="flex flex-wrap justify-center gap-3">
+                        {question?.wordBank.map((w) => {
+                          const isSelected = selectedWordIds.includes(w.id);
+                          return (
+                            <button
+                              key={w.id}
+                              onClick={() => handleBankClick(w.id)}
+                              disabled={isSelected}
+                              className={`font-bold py-3 px-5 rounded-xl transition-all text-lg
+                                ${isSelected 
+                                  ? 'bg-gray-200 text-gray-400 shadow-none cursor-default opacity-50' 
+                                  : 'bg-yellow-400 hover:bg-yellow-500 text-yellow-900 shadow-[0_4px_0_#ca8a04] active:shadow-none active:translate-y-[4px] cursor-pointer'
+                                }`}
+                            >
+                              {w.word}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+              </div>
+              
+              {/* CSS Animations */}
+              <style dangerouslySetInnerHTML={{__html: `
+                @keyframes shake {
+                  0%, 100% { transform: translateX(0); }
+                  25% { transform: translateX(-8px); }
+                  50% { transform: translateX(8px); }
+                  75% { transform: translateX(-8px); }
+                }
+                .animate-shake {
+                  animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
+                }
+                @keyframes bounce-short {
+                  0%, 100% { transform: translateY(0); }
+                  50% { transform: translateY(-15px); }
+                }
+                .animate-bounce-short {
+                  animation: bounce-short 0.5s ease-in-out;
+                }
+                @keyframes pop-in {
+                  0% { transform: scale(0.8); opacity: 0; }
+                  100% { transform: scale(1); opacity: 1; }
+                }
+                .animate-pop-in {
+                  animation: pop-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+                }
+                @keyframes fall-confetti {
+                  0% { transform: translateY(-10vh) rotate(0deg); opacity: 1; }
+                  100% { transform: translateY(110vh) rotate(720deg); opacity: 0; }
+                }
+                .animate-fall-confetti {
+                  animation-name: fall-confetti;
+                  animation-timing-function: linear;
+                  animation-iteration-count: infinite;
+                }
+              `}} />
+            </div>
+          );
+        }
+
+        // --- RENDER INITIALIZATION ---
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
